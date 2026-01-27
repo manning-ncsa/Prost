@@ -19,7 +19,7 @@ else:
 import importlib
 from astropy.table import Table
 from .diagnose import plot_match
-from .helpers import GalaxyCatalog, Transient, setup_logger, sanitize_input
+from .helpers import GalaxyCatalog, Transient, setup_logger, sanitize_input, get_ned_specz
 import logging
 from collections import OrderedDict
 import warnings
@@ -273,12 +273,14 @@ def associate_transient(
     redshift_col,
     cat_cols,
     log_fn,
+    n_hosts=2,
     calc_host_props=False,
     verbose=0,
     coord_err_cols=('ra_err', 'dec_err'),
     strict_checking=False,
     warn_on_fallback=True,
     plot_match=False,
+    best_redshift=False,
 ):
     """Associates a transient with its most likely host galaxy.
 
@@ -316,9 +318,12 @@ def associate_transient(
     strict_checking : boolean, optional
         If true, raises error if catalog doesn't support conditioning on a property requested.
     warn_on_fallback : boolean, optional
-        If true, raises warning if catalog doesn't support conditioning on a property requested. 
+        If true, raises warning if catalog doesn't support conditioning on a property requested.
     plot_match : boolean, optional
         If true, attempts to generate a plot image.
+    best_redshift : boolean, optional
+        If True, queries NED for spectroscopic redshift when host is found within 1 arcsec.
+        Default is False.
 
     Returns
     -------
@@ -380,6 +385,7 @@ def associate_transient(
         redshift=redshift,
         n_samples=n_samples,
         logger=logger,
+        n_hosts=n_hosts,
     )
 
     logger.info(
@@ -416,6 +422,9 @@ def associate_transient(
         fields.append(f"{prop}_info")
         if prop in condition_host_props:
             fields.append(f"{prop}_posterior")
+        if prop == "offset":
+            fields.append("frac_offset_mean")
+            fields.append("frac_offset_std")
 
     if cat_priority is not None:
         catalogs = sorted(
@@ -446,19 +455,21 @@ def associate_transient(
             cat = transient.associate(cat, cosmo, condition_host_props=condition_host_props_cat)
 
             if transient.best_host != -1:
-                best_idx = transient.best_host
-                second_best_idx = transient.second_best_host
-
                 print_props = ['objID', 'name', 'ra', 'dec', 'total_posterior']
                 condition_props = list(priors.keys())
 
-                log_host_properties(logger, transient.name, cat, best_idx, Fore.BLUE+f"\nProperties of best host (in {cat_name} {cat_release})", print_props, calc_host_props, condition_props)
-                log_host_properties(logger, transient.name, cat, second_best_idx, Fore.BLUE+f"\nProperties of 2nd best host (in {cat_name} {cat_release})", print_props, calc_host_props, condition_props)
+                ordinals = ["best", "2nd best", "3rd best", "4th best", "5th best", "6th best", "7th best", "8th best", "9th best", "10th best"]
 
-                # Populate results using a loop instead of manual assignments
-                for key, idx in {"host": best_idx, "host_2": second_best_idx}.items():
+                # Log properties for top n_hosts
+                for i, host_idx in enumerate(transient.best_hosts):
+                    rank_label = ordinals[i] if i < len(ordinals) else f"{i+1}th best"
+                    log_host_properties(logger, transient.name, cat, host_idx, Fore.BLUE+f"\nProperties of {rank_label} host (in {cat_name} {cat_release})", print_props, calc_host_props, condition_props)
+
+                # Populate results for all n_hosts
+                for i, host_idx in enumerate(transient.best_hosts):
+                    key = "host" if i == 0 else f"host_{i+1}"
                     for field in fields:
-                        result[f"{key}_{field}"] = cat.galaxies[field][idx]
+                        result[f"{key}_{field}"] = cat.galaxies[field][host_idx]
 
                 # Set additional metadata
                 result.update({
@@ -471,9 +482,9 @@ def associate_transient(
                     "none_posterior": transient.none_posterior,
                 })
 
-                # Collect extra catalog columns if needed
-                if cat_cols:
-                    result["extra_cat_cols"] = {field: cat.galaxies[field][best_idx] for field in cat.cat_col_fields}
+                # Collect extra catalog columns if needed (for best host only)
+                if cat_cols and len(transient.best_hosts) > 0:
+                    result["extra_cat_cols"] = {field: cat.galaxies[field][transient.best_hosts[0]] for field in cat.cat_col_fields}
 
                 if (result['host_name'].startswith("NGC")) or (result['host_name'].startswith("M")):
                     logger.info(f"Matched host is {result['host_name']}!")
@@ -482,6 +493,25 @@ def associate_transient(
                         f"Chosen galaxy has catalog ID of {result['host_objID']} "
                         f"and RA, DEC = {result['host_ra']:.6f}, {result['host_dec']:.6f}"
                     )
+
+                # Query NED for spectroscopic redshift if requested
+                if best_redshift:
+                    z_spec, z_spec_err, has_specz = get_ned_specz(
+                        result['host_ra'],
+                        result['host_dec'],
+                        search_radius=1.0,
+                        logger=logger
+                    )
+
+                    if has_specz:
+                        logger.info(
+                            f"Updating host redshift from catalog value "
+                            f"(z={result['host_redshift_mean']:.4f}, {result['host_redshift_info']}) "
+                            f"to NED spectroscopic value (z={z_spec:.4f}±{z_spec_err:.4f})"
+                        )
+                        result['host_redshift_mean'] = z_spec
+                        result['host_redshift_std'] = z_spec_err
+                        result['host_redshift_info'] = 'SPEC'
 
                 # For some reason the value of "verbose" is ignored here, and the effective
                 if plot_match and logger.getEffectiveLevel() == logging.DEBUG:
@@ -523,6 +553,7 @@ def associate_sample(
     likes=None,
     n_samples=1000,
     verbose=1,
+    n_hosts=2,
     parallel=True,
     save=True,
     save_path="./",
@@ -532,7 +563,8 @@ def associate_sample(
     cosmology=None,
     n_processes=None,
     calc_host_props=True,
-    coord_err_cols=None
+    coord_err_cols=None,
+    best_redshift=False
 ):
     """Wrapper function for associating sample of transients.
 
@@ -554,6 +586,8 @@ def associate_sample(
         List of samples to draw for monte-carlo association.
     verbose : int
         Verbosity level for logging; can be 0 - 3.
+    n_hosts : int
+        Number of potential hosts to return.
     parallel : boolean
         If True, runs in parallel with multiprocessing. Cannot be used with ipython!
     save : boolean
@@ -573,6 +607,9 @@ def associate_sample(
     calc_host_props : boolean
         If True, calculates all host properties (redshift, absmag, and fractional offset) regardless of whether or not
         they're needed for association.
+    best_redshift : boolean, optional
+        If True, queries NED for spectroscopic redshift when host is found within 1 arcsec.
+        Default is False.
 
     Returns
     -------
@@ -679,9 +716,14 @@ def associate_sample(
             redshift_col,
             cat_cols,
             log_fn,
+            n_hosts,
             calc_host_props,
             verbose,
-            coord_err_cols
+            coord_err_cols,
+            False,  # strict_checking
+            True,   # warn_on_fallback
+            False,  # plot_match
+            best_redshift
         )
         for idx, row in transient_catalog.iterrows()
     ]

@@ -9,7 +9,7 @@ import pickle
 import requests
 import matplotlib.pyplot as plt
 import numpy as np
-#hacky monkey-patch for python 3.8
+#monkey-patch for python 3.8
 if not hasattr(np, 'int'):
     np.int = int
 from astropy import units as u
@@ -28,7 +28,7 @@ from colorama import Fore, Style, init, deinit
 try:
     from lsst.rsp import get_tap_service
 except:
-    pass #if not in the RSP, ignore LSST 
+    pass #if not in the RSP, ignore LSST
 
 # Precision & default values
 PROB_FLOOR = np.finfo(float).eps
@@ -80,6 +80,8 @@ PROP_DTYPES = [
         ("offset_std", float),
         ("offset_posterior", float),
         ("offset_info", str),
+        ("frac_offset_mean", float),
+        ("frac_offset_std", float),
         ("absmag_samples", object),
         ("absmag_mean", float),
         ("absmag_std", float),
@@ -135,6 +137,14 @@ def sanitize_input(cat_name):
     cat_name_clean = re.sub(r"[_\-\s]", "", cat_name)
     return cat_name_clean.lower()
 
+
+class ColorlessFormatter(logging.Formatter):
+    """Formatter that strips ANSI color codes from log messages."""
+
+    def format(self, record):
+        message = super().format(record)
+        ansi_escape = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
+        return ansi_escape.sub('', message)
 
 def add_console_handler(logger, formatter):
     """Attach a console (stream) handler to the logger.
@@ -202,18 +212,19 @@ def setup_logger(log_file=None, verbose=1, is_main=False):
     log_levels = {0: logging.WARNING, 1: logging.INFO, 2: logging.DEBUG, 3: TRACE_LEVEL}
     logger.setLevel(log_levels.get(verbose))
 
-    formatter = logging.Formatter(f"{Style.DIM}%(asctime)s{Style.RESET_ALL}- %(levelname)s - %(message)s")
+    console_formatter = logging.Formatter(f"{Style.DIM}%(asctime)s{Style.RESET_ALL}- %(levelname)s - %(message)s")
+    file_formatter = ColorlessFormatter("%(asctime)s - %(levelname)s - %(message)s")
 
     # Main process: Set up log file and store its path
     log_file = log_file if is_main else os.environ.get('LOG_PATH_ENV')
 
     if log_file:
-        add_file_handler(logger, log_file, formatter)
+        add_file_handler(logger, log_file, file_formatter)
         if is_main:
             # Store log path for workers
             os.environ['LOG_PATH_ENV'] = log_file
     else:
-        add_console_handler(logger, formatter)
+        add_console_handler(logger, console_formatter)
     return logger
 
 def flux_to_mag(flux, zeropoint):
@@ -298,7 +309,7 @@ def fetch_skymapper_sources(search_pos, search_rad, cat_cols, calc_host_props, l
         r_good = (candidate_hosts['r_ngood'].notna()) & (candidate_hosts['r_ngood'] >= 1)
         candidate_hosts = candidate_hosts[g_good | r_good]
 
-    # quick cut to remove stars 
+    # quick cut to remove stars
     candidate_hosts = candidate_hosts[np.abs(candidate_hosts['i_psf'] - candidate_hosts['i_petro']) > STARMAG_DIFF]
 
     candidate_hosts.replace(DUMMY_FILL_VAL, np.nan, inplace=True)
@@ -338,7 +349,7 @@ def fetch_rubin_sources(search_pos, search_rad, cat_cols, calc_host_props, logge
 
     if release == "dp0.2":
         catalog_name = "dp02_dc2_catalogs.Object"
-    else: 
+    else:
         catalog_name = "dp1.Object"
 
     query = "SELECT * " +\
@@ -697,11 +708,11 @@ def calc_shape_props_skymapper(candidate_hosts):
     # Handle nan values in shape parameters - set to valid defaults
     a = np.where(np.isnan(a), SIZE_FLOOR, np.maximum(a, SIZE_FLOOR))
     b = np.where(np.isnan(b), SIZE_FLOOR, np.maximum(b, SIZE_FLOOR))
-    
+
     # Handle nan values in error measurements - set to uncertainty floor
     e_a = np.where(np.isnan(e_a), SIGMA_SIZE_FLOOR * a, np.maximum(e_a, SHAPE_FLOOR))
     e_b = np.where(np.isnan(e_b), SIGMA_SIZE_FLOOR * b, np.maximum(e_b, SHAPE_FLOOR))
-    
+
     # Handle nan values in position angle measurements
     PA = np.where(np.isnan(PA), 0.0, PA)
     e_PA = np.where(np.isnan(e_PA), SIGMA_SIZE_FLOOR * np.abs(PA), np.maximum(e_PA, SHAPE_FLOOR))
@@ -1110,8 +1121,10 @@ class Transient:
     best_host : int
         Catalog index of host with the highest posterior probability of association.
         Set to -1 if no valid host.
-    second_best_host : int
-        Catalog index of host with the second highest posterior probability of association.
+    best_hosts : list of int
+        List of catalog indices for the top n_hosts host galaxies.
+    n_hosts : int
+        Number of host galaxies to return.
     redshift : float
         Redshift of the transient. This is either the spectroscopic/photometric
         redshift or an inferred value from sampling from the prior.
@@ -1139,7 +1152,7 @@ class Transient:
 
     """
 
-    def __init__(self, name, position,  logger, redshift=np.nan, redshift_std=np.nan, spec_class="", position_err=(0.1*u.arcsec, 0.1*u.arcsec), phot_class="", n_samples=1000):
+    def __init__(self, name, position,  logger, redshift=np.nan, redshift_std=np.nan, spec_class="", position_err=(0.1*u.arcsec, 0.1*u.arcsec), phot_class="", n_samples=1000, n_hosts=2):
         self.name = name
         self.position = position
         self.position_err = position_err
@@ -1148,9 +1161,10 @@ class Transient:
         self.spec_class = spec_class
         self.phot_class = phot_class
         self.n_samples = n_samples
+        self.n_hosts = n_hosts
         self.best_host = -1
         self.logger = logger
-        self.second_best_host = -1
+        self.best_hosts = []
 
         if (redshift == redshift) and (redshift_std != redshift_std):
             redshift_std = SIGMA_REDSHIFT_FLOOR * self.redshift
@@ -1601,22 +1615,22 @@ class Transient:
             elif best_idx == (n_gals + 2):
                 self.logger.warning(Fore.YELLOW+"Association failed. Host is likely hostless."+Style.RESET_ALL)
 
-        # Now figure out second best index
-        if len(top_idxs) > 1:
-            second_idx = top_idxs[1]
-            if second_idx < n_gals:
-                self.second_best_host = second_idx
+        # Populate best_hosts list with top n_hosts candidates
+        self.best_hosts = []
+        for i in range(min(self.n_hosts, len(top_idxs))):
+            idx = top_idxs[i]
+            if idx < n_gals:
+                self.best_hosts.append(idx)
             else:
-                self.second_best_host = -1
-        else:
-            # No second candidate galaxy
-            self.second_best_host = -1
+                break
 
         # consolidate across samples
         galaxy_catalog.galaxies["total_posterior"] = np.nanmedian(post_gals_norm, axis=1)
 
         if 'offset' in condition_host_props:
             galaxy_catalog.galaxies["offset_posterior"] = np.nanmedian(post_offset_norm, axis=1)
+            galaxy_catalog.galaxies["frac_offset_mean"] = np.nanmean(fractional_offset_samples, axis=1)
+            galaxy_catalog.galaxies["frac_offset_std"] = np.nanstd(fractional_offset_samples, axis=1)
         if 'redshift' in condition_host_props:
             galaxy_catalog.galaxies["redshift_posterior"] = np.nanmedian(post_redshift_norm, axis=1)
         if 'absmag' in condition_host_props:
@@ -2419,10 +2433,10 @@ def build_glade_candidates(
         )
 
         galaxies["redshift_mean"] = pd.to_numeric(candidate_hosts["redshift"].values, errors='coerce')
-        galaxies["redshift_std"] = pd.to_numeric(candidate_hosts["redshift_std"].values, errors='coerce')
+        galaxies["redshift_std"] = redshift_std
         galaxies['redshift_info'] = ['PHOT']
 
-        # if the galaxy has a measured luminosity distance or spec-z, add to info
+        # Mark objects with measured luminosity distance or spec-z
         has_specz = candidate_hosts['f_dL'] > 1
         galaxies['redshift_info'][has_specz] = 'SPEC'
 
@@ -2827,9 +2841,9 @@ def build_decals_candidates(transient,
     return galaxies, cat_col_fields
 
 def build_rubin_candidates(
-    transient, 
+    transient,
     cosmo,
-    logger, 
+    logger,
     glade_catalog=None,
     search_rad=None,
     n_samples=1000,
@@ -3415,3 +3429,126 @@ def is_service_available(url, timeout=5):
         return True
     except Exception:
         return False
+
+
+def get_ned_specz(ra, dec, search_radius=1.0, logger=None):
+    """Query NED for spectroscopic redshift at given coordinates.
+
+    This function queries the NASA/IPAC Extragalactic Database (NED) for objects
+    near the specified coordinates and retrieves spectroscopic redshift information
+    if available. It filters out photometric redshifts and attempts to get detailed
+    redshift measurements with uncertainties.
+
+    Parameters
+    ----------
+    ra : float
+        Right ascension in degrees.
+    dec : float
+        Declination in degrees.
+    search_radius : float, optional
+        Search radius in arcseconds. Default is 1.0 arcsec.
+    logger : logging.Logger, optional
+        Logger instance for messages. If None, no logging is performed.
+
+    Returns
+    -------
+    z_spec : float or None
+        Spectroscopic redshift if found, otherwise None.
+    z_spec_err : float or None
+        Uncertainty in spectroscopic redshift if found, otherwise None.
+    has_specz : bool
+        True if a spectroscopic redshift was found, False otherwise.
+
+    Notes
+    -----
+    The function uses NED's 'Redshift Flag' to distinguish between spectroscopic
+    and photometric redshifts. It rejects objects flagged as 'PHOT' and accepts
+    those with empty flags (typically spectroscopic) or 'PUN' (published, uncorrected).
+
+    When detailed redshift tables are available, the function filters out measurements
+    marked with "Uncertain origin" and converts velocities to redshifts using z = v/c.
+
+    If uncertainty information is not available, the function estimates a conservative
+    uncertainty of either 50 km/s (converted to redshift) or 5% of the redshift value.
+
+    Examples
+    --------
+    >>> z, z_err, has_z = get_ned_specz(69.438805, -20.507317, search_radius=1.0)
+    >>> if has_z:
+    ...     print(f"Spectroscopic redshift: {z:.4f} ± {z_err:.4f}")
+
+    """
+    try:
+        from astroquery.ipac.ned import Ned
+    except ImportError:
+        if logger:
+            logger.warning("astroquery not available; cannot query NED for spectroscopic redshifts")
+        return None, None, False
+
+    try:
+        coord = SkyCoord(ra=ra*u.deg, dec=dec*u.deg)
+
+        # Query NED for nearby objects
+        result_table = Ned.query_region(coord, radius=search_radius*u.arcsec)
+
+        if len(result_table) == 0:
+            if logger:
+                logger.debug(f"No NED objects found within {search_radius} arcsec of RA={ra:.6f}, Dec={dec:.6f}")
+            return None, None, False
+
+        # Look for objects with spectroscopic redshifts
+        # NED uses 'Redshift Flag' to indicate quality/type
+        # Common flags: blank (usually spec-z), 'PHOT', 'PUN' (published, uncorrected)
+        for row in result_table:
+            if row['Redshift'] > 0:  # Valid redshift exists
+                z_flag = row['Redshift Flag'].strip() if row['Redshift Flag'] else ''
+
+                # Accept if flag is empty (usually spec-z) or explicitly 'PUN' (published, uncorrected but usually spec)
+                # Reject if flag is 'PHOT' (photometric)
+                if z_flag != 'PHOT':
+                    z_spec = float(row['Redshift'])
+                    separation = row['Separation']  # in arcmin
+
+                    # Try to get detailed redshift info to find uncertainties
+                    try:
+                        obj_name = row['Object Name']
+                        z_table = Ned.get_table(obj_name, table='redshifts')
+
+                        # Get the most reliable velocity measurement
+                        # Filter out entries marked as "Uncertain origin"
+                        reliable_z = z_table[~z_table['Qualifiers'].astype(str).str.contains('Uncertain', case=False, na=False)]
+
+                        if len(reliable_z) > 0:
+                            # Use first reliable measurement
+                            velocity = reliable_z['Published Velocity'][0]  # km/s
+                            # Convert to redshift: z = v/c
+                            z_spec = velocity / 299792.458
+                            # Estimate uncertainty as ~50 km/s / c (~0.00017) if not provided
+                            z_spec_err = 50.0 / 299792.458
+                        else:
+                            # Use the value from main table, estimate 5% uncertainty
+                            z_spec_err = 0.05 * z_spec
+
+                    except Exception as e:
+                        # If detailed query fails, use 5% uncertainty estimate
+                        if logger:
+                            logger.debug(f"Could not retrieve detailed redshift info from NED: {e}")
+                        z_spec_err = 0.05 * z_spec
+
+                    if logger:
+                        logger.info(
+                            f"Found NED spectroscopic redshift: z={z_spec:.4f}±{z_spec_err:.4f} "
+                            f"at separation={separation:.3f} arcmin"
+                        )
+
+                    return z_spec, z_spec_err, True
+
+        # No spectroscopic redshift found
+        if logger:
+            logger.debug(f"NED objects found but no spectroscopic redshift within {search_radius} arcsec")
+        return None, None, False
+
+    except Exception as e:
+        if logger:
+            logger.warning(f"NED query failed: {e}")
+        return None, None, False
