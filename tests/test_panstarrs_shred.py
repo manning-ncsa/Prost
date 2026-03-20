@@ -44,7 +44,7 @@ def test_panstarrs_shred():
         temp_sizes, temp_sizes_std, a_over_b, a_over_b_std, phi, phi_std = calc_shape_props_panstarrs(candidate_hosts)
 
         temp_mag_r = candidate_hosts["KronMag"].values
-        temp_mag_r_std = candidate_hosts["KronMagErr"].values
+        temp_mag_r_std = candidate_hosts["KronMagErr"].values.copy()
     
         # cap at 50% the mag
         # set a floor of 5%
