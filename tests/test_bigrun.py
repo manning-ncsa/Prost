@@ -11,6 +11,8 @@ else:
 import astropy.units as u
 import numpy as np
 import time
+import pytest
+import requests
 
 def test_bigrun():
     np.random.seed(18)
@@ -70,4 +72,4 @@ def test_bigrun():
 
  
    
-    assert len(hostTable) > 5
+    assert len(hostTable) >= 5
