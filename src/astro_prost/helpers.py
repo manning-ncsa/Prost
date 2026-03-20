@@ -834,7 +834,7 @@ def calc_shape_props_glade(candidate_hosts):
           - phi: Position angles (radians)
           - phi_std: Uncertainty in position angles
     """
-    temp_pa = candidate_hosts["PAHyp"].values
+    temp_pa = candidate_hosts["PAHyp"].values.copy()
 
     # assume no position angle for unmeasured gals
     temp_pa[temp_pa != temp_pa] = 0
@@ -913,7 +913,13 @@ def build_galaxy_array(candidate_hosts, cat_cols, transient_name, catalog, relea
 
         # Extend the dtype with new fields and their corresponding data types
         for col in cat_col_fields:
-            dtype.append((col, candidate_hosts[col].dtype))  # Append (column name, column dtype)
+            col_dtype = candidate_hosts[col].dtype
+            # Convert pandas extension dtypes (e.g. StringDtype) to numpy-compatible dtypes
+            if hasattr(col_dtype, 'numpy_dtype'):
+                col_dtype = col_dtype.numpy_dtype
+            elif not isinstance(col_dtype, np.dtype):
+                col_dtype = np.dtype('O')
+            dtype.append((col, col_dtype))
 
         # Create galaxies array with updated dtype
         galaxies = np.zeros(n_galaxies, dtype=dtype)
