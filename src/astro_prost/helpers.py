@@ -2756,7 +2756,8 @@ def build_decals_candidates(transient,
         temp_sizes, temp_sizes_std, a_over_b, a_over_b_std, phi, phi_std = calc_shape_props_decals(candidate_hosts)
 
         dlr_samples = calc_dlr(
-            transient_pos_samples, galaxies_pos, temp_sizes, temp_sizes_std, a_over_b, a_over_b_std, phi, phi_std
+            transient_pos_samples, galaxies_pos, temp_sizes, temp_sizes_std, a_over_b, a_over_b_std, phi, phi_std,
+            n_samples=n_samples,
         )
 
         # Calculate angular separation between SN and all galaxies (in arcseconds)
