@@ -860,7 +860,7 @@ def calc_shape_props_glade(candidate_hosts):
     nanbool = a_over_b_std != a_over_b_std
     a_over_b_std[nanbool] = SIGMA_SIZE_FLOOR * a_over_b[nanbool]
 
-    temp_pa = candidate_hosts["PAHyp"].values
+    temp_pa = candidate_hosts["PAHyp"].values.copy()
 
     # assume no position angle for unmeasured gals
     # (round is a decent assumption for the most distant ones)
@@ -2568,7 +2568,7 @@ def build_skymapper_candidates(transient,
         )
 
     temp_mag_r = candidate_hosts["r_petro"].values
-    temp_mag_r_std = candidate_hosts["e_r_petro"].values
+    temp_mag_r_std = candidate_hosts["e_r_petro"].values.copy()
 
     # cap at 50% the mag
     # set a floor of 5%
@@ -3166,7 +3166,7 @@ def build_panstarrs_candidates(
         )
 
     temp_mag_r = candidate_hosts["KronMag"].values
-    temp_mag_r_std = candidate_hosts["KronMagErr"].values
+    temp_mag_r_std = candidate_hosts["KronMagErr"].values.copy()
 
     # cap at 50% the mag
     # set a floor of 5%
