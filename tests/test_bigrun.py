@@ -11,6 +11,8 @@ else:
 import astropy.units as u
 import numpy as np
 import time
+import pytest
+import requests
 
 def test_bigrun():
     np.random.seed(18)

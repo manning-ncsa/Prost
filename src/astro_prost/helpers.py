@@ -752,7 +752,7 @@ def calc_shape_props_decals(candidate_hosts):
           - phi: Position angles (radians)
           - phi_std: Uncertainty in position angles
     """
-    temp_sizes = candidate_hosts["shape_r"].values
+    temp_sizes = candidate_hosts["shape_r"].values.copy()
     temp_sizes[temp_sizes < SIZE_FLOOR] = SIZE_FLOOR
     temp_sizes_ivar = np.maximum(1/(SIGMA_SIZE_FLOOR*temp_sizes)**2, candidate_hosts["shape_r_ivar"].values)
     temp_sizes_std = np.sqrt(1 / temp_sizes_ivar)
