@@ -12,7 +12,8 @@ else:
 import astropy.units as u
 import time
 import numpy as np
-import pytest 
+import pytest
+import requests
 
 @pytest.mark.skipif(
     not is_service_available("https://catalogs.mast.stsci.edu"),

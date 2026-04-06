@@ -12,6 +12,8 @@ else:
 import astropy.units as u
 import time
 import numpy as np
+import pytest
+import requests
 
 def test_associate_glade():
     np.random.seed(42)

@@ -753,7 +753,7 @@ def calc_shape_props_decals(candidate_hosts):
           - phi: Position angles (radians)
           - phi_std: Uncertainty in position angles
     """
-    temp_sizes = candidate_hosts["shape_r"].values
+    temp_sizes = candidate_hosts["shape_r"].values.copy()
     temp_sizes[temp_sizes < SIZE_FLOOR] = SIZE_FLOOR
     temp_sizes_ivar = np.maximum(1/(SIGMA_SIZE_FLOOR*temp_sizes)**2, candidate_hosts["shape_r_ivar"].values)
     temp_sizes_std = np.sqrt(1 / temp_sizes_ivar)
@@ -835,7 +835,7 @@ def calc_shape_props_glade(candidate_hosts):
           - phi: Position angles (radians)
           - phi_std: Uncertainty in position angles
     """
-    temp_pa = candidate_hosts["PAHyp"].values
+    temp_pa = candidate_hosts["PAHyp"].values.copy()
 
     # assume no position angle for unmeasured gals
     temp_pa[temp_pa != temp_pa] = 0
@@ -861,7 +861,7 @@ def calc_shape_props_glade(candidate_hosts):
     nanbool = a_over_b_std != a_over_b_std
     a_over_b_std[nanbool] = SIGMA_SIZE_FLOOR * a_over_b[nanbool]
 
-    temp_pa = candidate_hosts["PAHyp"].values
+    temp_pa = candidate_hosts["PAHyp"].values.copy()
 
     # assume no position angle for unmeasured gals
     # (round is a decent assumption for the most distant ones)
@@ -914,7 +914,13 @@ def build_galaxy_array(candidate_hosts, cat_cols, transient_name, catalog, relea
 
         # Extend the dtype with new fields and their corresponding data types
         for col in cat_col_fields:
-            dtype.append((col, candidate_hosts[col].dtype))  # Append (column name, column dtype)
+            col_dtype = candidate_hosts[col].dtype
+            # Convert pandas extension dtypes (e.g. StringDtype) to numpy-compatible dtypes
+            if hasattr(col_dtype, 'numpy_dtype'):
+                col_dtype = col_dtype.numpy_dtype
+            elif not isinstance(col_dtype, np.dtype):
+                col_dtype = np.dtype('O')
+            dtype.append((col, col_dtype))
 
         # Create galaxies array with updated dtype
         galaxies = np.zeros(n_galaxies, dtype=dtype)
@@ -2563,7 +2569,7 @@ def build_skymapper_candidates(transient,
         )
 
     temp_mag_r = candidate_hosts["r_petro"].values
-    temp_mag_r_std = candidate_hosts["e_r_petro"].values
+    temp_mag_r_std = candidate_hosts["e_r_petro"].values.copy()
 
     # cap at 50% the mag
     # set a floor of 5%
@@ -2757,7 +2763,8 @@ def build_decals_candidates(transient,
         temp_sizes, temp_sizes_std, a_over_b, a_over_b_std, phi, phi_std = calc_shape_props_decals(candidate_hosts)
 
         dlr_samples = calc_dlr(
-            transient_pos_samples, galaxies_pos, temp_sizes, temp_sizes_std, a_over_b, a_over_b_std, phi, phi_std
+            transient_pos_samples, galaxies_pos, temp_sizes, temp_sizes_std, a_over_b, a_over_b_std, phi, phi_std,
+            n_samples=n_samples,
         )
 
         # Calculate angular separation between SN and all galaxies (in arcseconds)
@@ -3160,7 +3167,7 @@ def build_panstarrs_candidates(
         )
 
     temp_mag_r = candidate_hosts["KronMag"].values
-    temp_mag_r_std = candidate_hosts["KronMagErr"].values
+    temp_mag_r_std = candidate_hosts["KronMagErr"].values.copy()
 
     # cap at 50% the mag
     # set a floor of 5%
