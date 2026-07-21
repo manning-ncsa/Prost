@@ -838,6 +838,7 @@ def calc_shape_props_glade(candidate_hosts):
     temp_pa = candidate_hosts["PAHyp"].values.copy()
 
     # assume no position angle for unmeasured gals
+    temp_pa = temp_pa.copy()
     temp_pa[temp_pa != temp_pa] = 0
 
     # (n) HyperLEDA decimal logarithm of the length of the projected major axis
